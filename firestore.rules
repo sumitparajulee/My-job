@@ -1,0 +1,80 @@
+rules_version = '2';
+
+// ----------------------------------------------------------------------------
+// Docket security rules. Paste this whole file into the Firebase console:
+// Firestore Database -> Rules -> replace everything -> Publish.
+//
+// Identity model: Anonymous Auth (enable it under Authentication ->
+// Sign-in method -> Anonymous, one toggle, no config) gives every browser
+// a real, persistent auth.uid with no sign-up flow. A workspace is
+// protected by its invite code — joining means writing your own row into
+// that workspace's `members` subcollection, which you can only do for
+// your own uid (enforced below). Once you're a member, isMember() lets
+// you read/write that workspace's data.
+//
+// Honest limitation: workspace *names and invite codes* (not job data)
+// are listable by any signed-in-anonymously visitor under these rules —
+// Firestore doesn't cleanly support "you may query, but only for a
+// specific known invite code" without Cloud Functions. This mirrors the
+// same "invite code = shared link" trust model as the rest of this app's
+// sync history (see CONVEX_SETUP.md's identity section for the same
+// trade-off made differently there) — actual job/company/recruiter data
+// stays membership-gated either way.
+// ----------------------------------------------------------------------------
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isMember(workspaceId) {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    // Maps a signed-in user to the single workspace they belong to.
+    // Read/written once at sign-in (see useSessionStore.ts's
+    // getUserWorkspaceId/setUserWorkspaceId) before the user even has a
+    // workspace yet, so this can't depend on isMember() — it can only
+    // depend on the doc id matching the caller's own uid.
+    match /userWorkspaces/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /workspaces/{workspaceId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update, delete: if false;
+
+      match /members/{uid} {
+        allow read: if request.auth != null;
+        // You can only create/update your *own* membership row — this is
+        // what "joining" a workspace actually is.
+        allow create, update: if request.auth != null && request.auth.uid == uid;
+        allow delete: if false;
+      }
+    }
+
+    match /companies/{docId} {
+      allow read, update: if isMember(resource.data.workspaceId);
+      allow create: if isMember(request.resource.data.workspaceId);
+      allow delete: if false; // soft delete only (deletedAt field), see CONVEX_SETUP.md's rationale — same here
+    }
+
+    match /recruiters/{docId} {
+      allow read, update: if isMember(resource.data.workspaceId);
+      allow create: if isMember(request.resource.data.workspaceId);
+      allow delete: if false;
+    }
+
+    match /jobs/{docId} {
+      allow read, update: if isMember(resource.data.workspaceId);
+      allow create: if isMember(request.resource.data.workspaceId);
+      allow delete: if false;
+    }
+
+    match /timelineEvents/{docId} {
+      allow read, update: if isMember(resource.data.workspaceId);
+      allow create: if isMember(request.resource.data.workspaceId);
+      allow delete: if false;
+    }
+  }
+}
